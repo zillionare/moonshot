@@ -4,4 +4,6 @@ __author__ = """aaron yang"""
 __email__ = "code@jieyu.ai"
 __version__ = "0.1.0"
 
-from .moonshot import *
+from .moonshot import Moonshot
+
+__all__ = ["Moonshot"]
