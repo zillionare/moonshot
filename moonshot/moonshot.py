@@ -36,6 +36,7 @@ class Moonshot:
         self.bins: Optional[Union[int, List[float]]] = None
         self.factor_lag: Optional[int] = None
         self.weighting_method: Optional[str] = None
+        self.ic_series: Optional["pd.Series[float]"] = None
 
     def _calculate_portfolio_returns(
         self,
@@ -127,7 +128,7 @@ class Moonshot:
         quantiles: Optional[int] = None,
         bins: Optional[Union[int, List[float]]] = None,
         weighting_method: str = "equal_weight",
-    ) -> Optional[Tuple["pd.Series[float]", float, float, float]]:
+    ) -> Optional[Tuple["pd.Series[float]", float, float, float, float]]:
         """
         处理单个月的回测逻辑
 
@@ -144,7 +145,7 @@ class Moonshot:
                 - "factor_weight": 因子加权
 
         Returns:
-            如果成功处理返回(组收益率Series, 基准收益率float, long-only收益率float, 多空组合收益率float)，否则返回None
+            如果成功处理返回(组收益率Series, 基准收益率float, long-only收益率float, 多空组合收益率float, IC值float)，否则返回None
         """
         # 获取因子计算时点的数据（通常是月末）
         factor_date = factor_month["month_end"]
@@ -217,10 +218,21 @@ class Moonshot:
             month_data, group_returns, factor_col, weighting_method
         )
 
+        # 计算IC值（因子值与收益率的相关系数）
+        ic_value = month_data[factor_col].corr(month_data["return"])
+        if pd.isna(ic_value):
+            ic_value = 0.0
+
         # 添加月份信息
         group_returns.name = current_trading_month["year_month"]
 
-        return group_returns, benchmark_return, long_only_return, long_short_return
+        return (
+            group_returns,
+            benchmark_return,
+            long_only_return,
+            long_short_return,
+            ic_value,
+        )
 
     def backtest(
         self,
@@ -271,6 +283,7 @@ class Moonshot:
         self.benchmark_returns = result[1]
         self.long_only_returns = result[2]
         self.long_short_returns = result[3]
+        self.ic_series = result[4]
 
         # 计算最优分层收益：选择累计收益最好的分层
         if self.quantile_returns is not None and len(self.quantile_returns.columns) > 0:
@@ -469,7 +482,10 @@ class Moonshot:
         # 计算指标
         metrics_data = {}
 
-        # 多空组合指标
+        # 策略收益使用多空组合
+        metrics_data["strategy"] = self._calculate_single_metrics(long_short_spread)
+
+        # 多空组合指标（保持向后兼容）
         metrics_data["long-short"] = self._calculate_single_metrics(long_short_spread)
 
         # long-only指标
@@ -557,6 +573,15 @@ class Moonshot:
         else:
             alpha, beta = 0, 0
 
+        # IC计算（Information Coefficient）
+        ic_value = 0
+        if (
+            hasattr(self, "ic_series")
+            and self.ic_series is not None
+            and len(self.ic_series) > 0
+        ):
+            ic_value = self.ic_series.mean()
+
         return {
             "Ann. Returns": annual_return,
             "Ann. Vol": annual_volatility,
@@ -568,6 +593,7 @@ class Moonshot:
             "CAGR": cagr,
             "Alpha": alpha,
             "Beta": beta,
+            "IC": ic_value,
         }
 
     def calculate_group_statistics(self, monthly_returns: pd.DataFrame) -> pd.DataFrame:
@@ -701,10 +727,11 @@ class Moonshot:
                 - "factor_weight": 因子加权回测（Alphalens风格）
 
         Returns:
-            tuple: (策略分组月度收益DataFrame, 基准月度收益Series, long-only收益Series, 多空组合收益Series)
+            tuple: (策略分组月度收益DataFrame, 基准月度收益Series, long-only收益Series, 多空组合收益Series, IC序列Series)
                    策略收益以月份为索引，分组为列
                    基准收益为所有股票等权重收益
                    纯多和多空组合收益根据weighting_method计算
+                   IC序列为每月因子值与收益率的相关系数
         """
 
         # 参数验证
@@ -727,6 +754,7 @@ class Moonshot:
                 pd.Series(dtype=float),
                 pd.Series(dtype=float),
                 pd.Series(dtype=float),
+                pd.Series(dtype=float),
             )
 
         # 转换日期列为 datetime 类型
@@ -744,6 +772,7 @@ class Moonshot:
         benchmark_returns = []
         long_only_returns = []
         long_short_returns = []
+        ic_values = []
 
         # 遍历交易日历，执行回测
         for i in range(factor_lag, len(trading_calendar)):
@@ -768,15 +797,17 @@ class Moonshot:
                     benchmark_return,
                     long_only_return,
                     long_short_return,
+                    ic_value,
                 ) = result
                 monthly_returns.append(group_returns)
                 benchmark_returns.append(benchmark_return)
                 long_only_returns.append(long_only_return)
                 long_short_returns.append(long_short_return)
+                ic_values.append(ic_value)
 
         # 合并所有月份的收益
         if not monthly_returns:
-            return pd.DataFrame(), pd.Series(), pd.Series(), pd.Series()
+            return pd.DataFrame(), pd.Series(), pd.Series(), pd.Series(), pd.Series()
 
         # 策略收益
         quantile_returns = pd.concat(monthly_returns, axis=1).T
@@ -806,4 +837,13 @@ class Moonshot:
             long_short_returns, index=quantile_returns.index, name="Long_Short"
         )
 
-        return quantile_returns, benchmark_series, long_only_series, long_short_series
+        # IC序列
+        ic_series = pd.Series(ic_values, index=quantile_returns.index, name="IC")
+
+        return (
+            quantile_returns,
+            benchmark_series,
+            long_only_series,
+            long_short_series,
+            ic_series,
+        )

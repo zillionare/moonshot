@@ -203,8 +203,9 @@ class TestMoonshotClass:
 
         metrics = moonshot.calculate_metrics()
 
-        # Should have 4 columns: long-short, long-only, optimal, benchmark
-        assert len(metrics.columns) == 4
+        # Should have 5 columns: strategy, long-short, long-only, optimal, benchmark
+        assert len(metrics.columns) == 5
+        assert "strategy" in metrics.columns
         assert "long-short" in metrics.columns
         assert "long-only" in metrics.columns
         assert "benchmark" in metrics.columns
