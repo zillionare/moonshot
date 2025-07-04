@@ -185,7 +185,7 @@ class Moonshot:
                         month_data[factor_col],
                         q=quantiles,
                         labels=False,
-                        duplicates="drop",
+                        duplicates="raise",
                     )
                     + 1
                 )
@@ -743,7 +743,9 @@ class Moonshot:
             raise ValueError("factor_lag 必须大于等于1")
 
         # 重置索引便于操作
-        factor_df = factor_data.to_frame(name="factor").reset_index()
+        if isinstance(factor_data, pd.Series):
+            factor_data = factor_data.to_frame(name="factor")
+        factor_df = factor_data.reset_index()
         factor_col = "factor"
         bars_df = bars.reset_index()
 
@@ -847,3 +849,13 @@ class Moonshot:
             long_short_series,
             ic_series,
         )
+
+
+if __name__ == "__main__":
+    moonshot = Moonshot()
+    import pickle
+
+    factor = pickle.load(open("/tmp/factor_5000.pkl", "rb"))
+    barss = pickle.load(open("/tmp/barss_5000.pkl", "rb"))
+
+    moonshot.backtest(factor, barss)
