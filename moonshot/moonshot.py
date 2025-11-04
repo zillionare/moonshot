@@ -298,7 +298,7 @@ class Moonshot:
         # 判断新开仓
         data_with_flag["is_new"] = (
             (data_with_flag["flag"].abs() == 1) & (data_with_flag["flag"] != prev)
-        ).astype(int)
+        ).astype(bool)
 
         # 获取所有月份并排序
         months = sorted(data_with_flag.index.get_level_values("month").unique())
@@ -350,10 +350,8 @@ class Moonshot:
             return 0
 
         # 分离新买入和继续持有的资产
-        #pylint: disable=singleton-comparison
-        new_assets = position_assets[position_assets["is_new"] == True]
-        #pylint: disable=singleton-comparison
-        old_assets = position_assets[position_assets["is_new"] == False]
+        new_assets = position_assets[position_assets["is_new"]]
+        old_assets = position_assets[~position_assets["is_new"]]
 
         # 计算收益
         total_return = 0
