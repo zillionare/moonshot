@@ -1,6 +1,9 @@
 import datetime
+
 import pandas as pd
 import polars as pl
+
+
 def ensure_date(date: datetime.datetime | str | datetime.date) -> datetime.date:
     """将输入的日期转换为datetime.date类型
 
@@ -42,7 +45,7 @@ def resample_to_month(data: pd.DataFrame, **kwargs) -> pd.DataFrame:
     返回:
         重采样后的DataFrame
     """
-    df = pl.from_pandas(data)
+    df = pl.from_pandas(data).lazy()
     df = df.with_columns(pl.col("date").cast(pl.Datetime))
 
     df = df.with_columns(
@@ -73,9 +76,7 @@ def resample_to_month(data: pd.DataFrame, **kwargs) -> pd.DataFrame:
 
         # 检查聚合方式是否支持
         if method not in agg_methods:
-            raise ValueError(
-                f"不支持的聚合方式: {method}，支持的方式为: {list(agg_methods.keys())}"
-            )
+            raise ValueError(f"不支持的聚合方式: {method}，支持的方式为: {list(agg_methods.keys())}")
 
         # 添加聚合表达式
         agg_exprs.append(agg_methods[method](pl.col(col_name)).alias(col_name))
@@ -89,7 +90,7 @@ def resample_to_month(data: pd.DataFrame, **kwargs) -> pd.DataFrame:
         .sort(pl.col("month"), pl.col("asset"))
     )
 
-    result = result.to_pandas()
+    result = result.collect().to_pandas()
     result["month"] = pd.PeriodIndex(result["month"], freq="M")
 
     return result.set_index(["month", "asset"])

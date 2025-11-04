@@ -1,34 +1,21 @@
-#!/usr/bin/env python3
-"""
-Monthly Factor Backtesting Framework Test Suite
-
-Test Objectives:
-1. Verify Moonshot class functionality
-2. Verify function logic correctness
-3. Verify numerical calculation accuracy
-4. Verify boundary condition handling
-5. Verify data integrity
-"""
-
-from datetime import datetime, timedelta
+from unittest.mock import patch
 
 import matplotlib
 import numpy as np
 import pandas as pd
 import pytest
+from pandas.testing import assert_series_equal
 
 matplotlib.use("Agg")
 
-
+import moonshot
 from moonshot import Moonshot
+from moonshot.helper import resample_to_month
 
 
 @pytest.fixture
 def simple_test_data():
-    """Fixture providing simple test data for basic tests"""
-    # Create simple test data with 2 assets, 2 months
     dates = pd.date_range("2023-01-01", "2023-02-28", freq="D")
-    assets = ["A", "B"]
 
     # Construct factor data (month-end data)
     factor_dates = ["2023-01-31"]
@@ -38,7 +25,6 @@ def simple_test_data():
         factor_data.append({"date": pd.to_datetime(date), "asset": "B", "factor": 2.0})
 
     factor_df = pd.DataFrame(factor_data)
-    factor_series = factor_df.set_index(["date", "asset"])["factor"]
 
     # Construct price data - simple numbers for easy verification
     price_data = []
@@ -48,10 +34,9 @@ def simple_test_data():
         # Asset B: 100 -> 105 (5% return)
         price_data.append({"date": date, "asset": "B", "open": 100, "close": 105})
 
-    bars_df = pd.DataFrame(price_data)
-    bars = bars_df.set_index(["date", "asset"])
+    bars = pd.DataFrame(price_data)
 
-    return factor_series, bars
+    return factor_df, bars
 
 
 @pytest.fixture
@@ -76,7 +61,6 @@ def medium_test_data():
             )
 
     factor_df = pd.DataFrame(factor_data)
-    factor_series = factor_df.set_index(["date", "asset"])["factor"]
 
     # Generate price data with returns correlated to factor
     price_data = []
@@ -104,309 +88,534 @@ def medium_test_data():
                 }
             )
 
-    bars_df = pd.DataFrame(price_data)
-    bars = bars_df.set_index(["date", "asset"])
+    bars = pd.DataFrame(price_data)
 
-    return factor_series, bars
+    return factor_df, bars
+
+
+@pytest.fixture
+def mnshot(simple_test_data) -> Moonshot:
+    _, bars = simple_test_data
+    return Moonshot(bars)
 
 
 class TestMoonshotClass:
-    """Test the Moonshot class functionality"""
+    def test_check_factor_type(self, mnshot):
+        assert "discrete" == mnshot.check_factor_type(pd.Series([1, 0, -1]))
+        assert "discrete" == mnshot.check_factor_type(pd.Series([1, 1, 1]))
+        assert "discrete" == mnshot.check_factor_type(pd.Series([1.0, 0.0, -1.0]))
 
-    def test_moonshot_initialization(self):
-        """Test Moonshot class initialization"""
-        moonshot = Moonshot()
-        assert moonshot.quantile_returns is None
-        assert moonshot.benchmark_returns is None
-        assert moonshot.factor_data is None
-        assert moonshot.bars_data is None
-
-    def test_moonshot_backtest_simple(self, simple_test_data):
-        """Test Moonshot backtest with simple data"""
-        factor_series, bars = simple_test_data
-
-        moonshot = Moonshot()
-        moonshot.backtest(factor_series, bars, quantiles=2)
-        quantile_returns = moonshot.quantile_returns
-        benchmark_returns = moonshot.benchmark_returns
-        long_only_returns = moonshot.long_only_returns
-        long_short_returns = moonshot.long_short_returns
-        optimal_returns = moonshot.optimal_returns
-
-        # Verify results are stored
-        assert moonshot.quantile_returns is not None
-        assert moonshot.benchmark_returns is not None
-
-        # Verify return values
-        assert isinstance(quantile_returns, pd.DataFrame)
-        assert isinstance(benchmark_returns, pd.Series)
-
-        # Should have 2 quantiles
-        assert len(quantile_returns.columns) == 2
-
-        # Verify returns are reasonable
-        # Asset A (factor=1) should be in Q1, Asset B (factor=2) should be in Q2
-        # A has 10% return, B has 5% return
-        # So Q1 should have 10% return, Q2 should have 5% return
-        assert abs(quantile_returns.iloc[0, 0] - 0.10) < 1e-10  # Q1 (Asset A)
-        assert abs(quantile_returns.iloc[0, 1] - 0.05) < 1e-10  # Q2 (Asset B)
-
-        # Benchmark should be average: (10% + 5%) / 2 = 7.5%
-        assert abs(benchmark_returns.iloc[0] - 0.075) < 1e-10
-
-    def test_moonshot_backtest_medium(self, medium_test_data):
-        """Test Moonshot backtest with medium complexity data"""
-        factor_series, bars = medium_test_data
-
-        moonshot = Moonshot()
-        moonshot.backtest(factor_series, bars, quantiles=5)
-        quantile_returns = moonshot.quantile_returns
-        benchmark_returns = moonshot.benchmark_returns
-        long_only_returns = moonshot.long_only_returns
-        long_short_returns = moonshot.long_short_returns
-        optimal_returns = moonshot.optimal_returns
-
-        # Should have 5 quantiles
-        assert len(quantile_returns.columns) == 5
-
-        # Should have multiple months of data
-        assert len(quantile_returns) > 1
-
-        # Higher quantiles should generally have higher returns
-        # (due to our data construction)
-        mean_returns = quantile_returns.mean()
-        for i in range(len(mean_returns) - 1):
-            assert mean_returns.iloc[i] <= mean_returns.iloc[i + 1]
-
-    def test_moonshot_plot_methods_require_backtest(self):
-        """Test that plot methods require backtest to be run first"""
-        moonshot = Moonshot()
-
-        with pytest.raises(ValueError, match="请先执行backtest\(\)方法"):
-            moonshot.plot_long_short_returns()
-
-        with pytest.raises(ValueError, match="请先执行backtest\(\)方法"):
-            moonshot.plot_long_short_returns()
-
-        with pytest.raises(ValueError, match="请先执行backtest\(\)方法"):
-            moonshot.plot_long_only_returns()
-
-        with pytest.raises(ValueError, match="请先执行backtest\(\)方法"):
-            moonshot.calculate_metrics()
-
-    def test_moonshot_calculate_metrics(self, medium_test_data):
-        """Test Moonshot metrics calculation"""
-        factor_series, bars = medium_test_data
-
-        moonshot = Moonshot()
-        moonshot.backtest(factor_series, bars, quantiles=5)
-
-        metrics = moonshot.calculate_metrics()
-
-        # Should have 5 columns: strategy, long-short, long-only, optimal, benchmark
-        assert len(metrics.columns) == 5
-        assert "strategy" in metrics.columns
-        assert "long-short" in metrics.columns
-        assert "long-only" in metrics.columns
-        assert "benchmark" in metrics.columns
-
-        # Should have all required metrics
-        expected_metrics = [
-            "Ann. Returns",
-            "Ann. Vol",
-            "Sharpe",
-            "Max DrawDonw",
-            "Win Rate",
-            "Sortino",
-            "Calmar",
-            "CAGR",
-            "Alpha",
-            "Beta",
-        ]
-        for metric in expected_metrics:
-            assert metric in metrics.index
-
-        # Verify metrics are reasonable
-        assert not metrics.isna().any().any()  # No NaN values
-
-        # Sharpe ratios should be finite
-        sharpe_ratios = metrics.loc["Sharpe"]
-        assert all(np.isfinite(sharpe_ratios))
-
-        # Win rates should be between 0 and 1
-        win_rates = metrics.loc["Win Rate"]
-        assert all(0 <= rate <= 1 for rate in win_rates)
-
-        # Max drawdowns should be negative or zero
-        max_drawdowns = metrics.loc["Max DrawDonw"]
-        assert all(dd <= 0 for dd in max_drawdowns)
-
-
-class TestEdgeCases:
-    """Test edge cases and error handling"""
-
-    def test_empty_data(self):
-        """Test handling of empty data"""
-        empty_factor = pd.Series([], dtype=float, name="factor")
-        empty_factor.index = pd.MultiIndex.from_tuples([], names=["date", "asset"])
-
-        empty_bars = pd.DataFrame(columns=["open", "close"])
-        empty_bars.index = pd.MultiIndex.from_tuples([], names=["date", "asset"])
-
-        moonshot = Moonshot()
-        moonshot.backtest(empty_factor, empty_bars)
-        quantile_returns = moonshot.quantile_returns
-        benchmark_returns = moonshot.benchmark_returns
-        long_only_returns = moonshot.long_only_returns
-        long_short_returns = moonshot.long_short_returns
-        optimal_returns = moonshot.optimal_returns
-
-        assert len(quantile_returns) == 0
-        assert len(benchmark_returns) == 0
-
-    def test_single_asset(self):
-        """Test handling of single asset"""
-        # Create data with only one asset
-        dates = pd.date_range("2023-01-01", "2023-02-28", freq="D")
-
-        factor_data = [
-            {"date": pd.to_datetime("2023-01-31"), "asset": "A", "factor": 1.0}
-        ]
-        factor_df = pd.DataFrame(factor_data)
-        factor_series = factor_df.set_index(["date", "asset"])["factor"]
-
-        price_data = []
-        for date in dates:
-            price_data.append({"date": date, "asset": "A", "open": 100, "close": 110})
-
-        bars_df = pd.DataFrame(price_data)
-        bars = bars_df.set_index(["date", "asset"])
-
-        moonshot = Moonshot()
-        moonshot.backtest(factor_series, bars, quantiles=2)
-        quantile_returns = moonshot.quantile_returns
-        benchmark_returns = moonshot.benchmark_returns
-        long_only_returns = moonshot.long_only_returns
-        long_short_returns = moonshot.long_short_returns
-        optimal_returns = moonshot.optimal_returns
-
-        # With only one asset, quantile grouping may fail
-        # In this case, we should get empty results
-        # This is expected behavior when there's insufficient data for grouping
-        assert len(quantile_returns.columns) >= 0
-
-    def test_bins_parameter(self, medium_test_data):
-        """Test using bins parameter instead of quantiles"""
-        factor_series, bars = medium_test_data
-
-        moonshot = Moonshot()
-        moonshot.backtest(
-            factor_series, bars, quantiles=None, bins=[0, 2, 4, 6]  # 3 bins
+        assert "continuous" == mnshot.check_factor_type(
+            pd.Series([1, 2, 3], dtype=np.float32)
         )
-        quantile_returns = moonshot.quantile_returns
-        benchmark_returns = moonshot.benchmark_returns
-        long_only_returns = moonshot.long_only_returns
-        long_short_returns = moonshot.long_short_returns
-        optimal_returns = moonshot.optimal_returns
 
-        # Should have 3 bins
-        assert len(quantile_returns.columns) == 3
-        assert all(col.startswith("Bin") for col in quantile_returns.columns)
+    def test_is_month_indexed(self, mnshot):
+        assert mnshot.is_month_indexed(mnshot.data)
 
-    def test_factor_lag_parameter(self, medium_test_data):
-        """Test different factor lag values"""
-        factor_series, bars = medium_test_data
+        df = pd.DataFrame()
+        assert not mnshot.is_month_indexed(df)
 
-        moonshot = Moonshot()
+    def test_append_factor(self, simple_test_data):
+        factors, bars = simple_test_data
+        ms = Moonshot(bars)
 
-        # Test factor_lag = 1 (default)
-        moonshot.backtest(factor_series, bars, quantiles=5, factor_lag=1)
-        quantile_returns_1 = moonshot.quantile_returns
+        with pytest.raises(ValueError) as e:
+            ms.append_factor(factors, "A")
 
-        # Test factor_lag = 2
-        moonshot.backtest(factor_series, bars, quantiles=5, factor_lag=2)
-        quantile_returns_2 = moonshot.quantile_returns
+        assert str(e.value) == "因子数据中不存在列: A"
 
-        # With higher lag, should have fewer trading periods
-        assert len(quantile_returns_2) <= len(quantile_returns_1)
+        with pytest.raises(ValueError) as e:
+            ms.append_factor(factors, "factor", resample="first")
+            ms.append_factor(factors, "factor", resample="first")
 
-    def test_invalid_parameters(self):
-        """Test invalid parameter combinations"""
-        moonshot = Moonshot()
+        assert str(e.value) == "重复加入因子：factor"
 
-        # Create minimal valid data
-        factor_data = [
-            {"date": pd.to_datetime("2023-01-31"), "asset": "A", "factor": 1.0}
-        ]
-        factor_df = pd.DataFrame(factor_data)
-        factor_series = factor_df.set_index(["date", "asset"])["factor"]
+        ms = Moonshot(bars)
+        factors["factor"] = [1, 0]
+        with patch.object(moonshot.moonshot.logger, "warning") as mock_warning:
+            ms.append_factor(factors, "factor", 5, resample="first")
+            assert mock_warning.called
 
-        dates = pd.date_range("2023-01-01", "2023-02-28", freq="D")
+        ms = Moonshot(bars)
+        with pytest.raises(ValueError) as e:
+            ms.append_factor(factors, "factor")
+
+        assert str(e.value) == "数据未按月份索引，请使用resample_method参数指定重采样方法"
+
+        ms.append_factor(factors, "factor", resample="first")
+        result = ms.data["factor"].values.tolist()
+        expected = [1.0, 0.0, np.nan, np.nan]
+
+        np.testing.assert_array_equal(result, expected)
+
+    def test_calculate_benchmark_returns(self):
+        """Test _calculate_benchmark_returns method with simple data for easy mental verification"""
+        # Create simple test data with 2 assets and 3 months
+        # Asset A: open=100, close=110 in month1 (10% return)
+        # Asset A: close=121 in month2 (10% return from 110)
+        # Asset A: close=133.1 in month3 (10% return from 121)
+        # Asset B: open=200, close=210 in month1 (5% return)
+        # Asset B: close=220.5 in month2 (5% return from 210)
+        # Asset B: close=231.525 in month3 (5% return from 220.5)
+
+        dates = pd.date_range("2023-01-01", "2023-03-31", freq="D")
+
         price_data = []
         for date in dates:
-            price_data.append({"date": date, "asset": "A", "open": 100, "close": 110})
-        bars_df = pd.DataFrame(price_data)
-        bars = bars_df.set_index(["date", "asset"])
+            month = date.month
+            if month == 1:
+                # Month 1
+                price_data.append(
+                    {"date": date, "asset": "A", "open": 100, "close": 110}
+                )
+                price_data.append(
+                    {"date": date, "asset": "B", "open": 200, "close": 210}
+                )
+            elif month == 2:
+                # Month 2
+                price_data.append(
+                    {"date": date, "asset": "A", "open": 110, "close": 121}
+                )
+                price_data.append(
+                    {"date": date, "asset": "B", "open": 210, "close": 220.5}
+                )
+            else:
+                # Month 3
+                price_data.append(
+                    {"date": date, "asset": "A", "open": 121, "close": 133.1}
+                )
+                price_data.append(
+                    {"date": date, "asset": "B", "open": 220.5, "close": 231.525}
+                )
 
-        # Test both quantiles and bins specified
-        with pytest.raises(ValueError, match="quantiles 和 bins 不能同时指定"):
-            moonshot.backtest(factor_series, bars, quantiles=5, bins=[1, 2, 3])
+        bars = pd.DataFrame(price_data)
+        ms = Moonshot(bars)
 
-        # Test invalid factor_lag
-        with pytest.raises(ValueError, match="factor_lag 必须大于等于1"):
-            moonshot.backtest(factor_series, bars, factor_lag=0)
+        # Calculate benchmark returns
+        benchmark_returns = ms._calculate_benchmark_returns()
 
+        # Expected values:
+        # Month 1: (110/100-1 + 210/200-1) / 2 = (0.1 + 0.05) / 2 = 0.075 (7.5%)
+        # Month 2: (121/110-1 + 220.5/210-1) / 2 = (0.1 + 0.05) / 2 = 0.075 (7.5%)
+        # Month 3: (133.1/121-1 + 231.525/220.5-1) / 2 = (0.1 + 0.05) / 2 = 0.075 (7.5%)
+        expected_returns = pd.Series(
+            [0.075, 0.075, 0.075], index=pd.period_range("2023-01", "2023-03", freq="M")
+        )
 
-class TestNumericalAccuracy:
-    """Test numerical accuracy of calculations"""
+        # Verify the results
+        pd.testing.assert_series_equal(
+            benchmark_returns, expected_returns, check_dtype=False
+        )
 
-    def test_simple_calculation_accuracy(self, simple_test_data):
-        """Test that simple calculations are numerically accurate"""
-        factor_series, bars = simple_test_data
+    def test_calculate_benchmark_returns_with_different_returns(self):
+        """Test _calculate_benchmark_returns with assets having different returns"""
+        # Create test data with 3 assets and 2 months with different returns
+        # Asset A: open=100, close=110 in month1 (10% return), close=132 in month2 (20% return)
+        # Asset B: open=200, close=210 in month1 (5% return), close=231 in month2 (10% return)
+        # Asset C: open=300, close=315 in month1 (5% return), close=346.5 in month2 (10% return)
 
-        moonshot = Moonshot()
-        moonshot.backtest(factor_series, bars, quantiles=2)
-        quantile_returns = moonshot.quantile_returns
-        benchmark_returns = moonshot.benchmark_returns
-        long_only_returns = moonshot.long_only_returns
-        long_short_returns = moonshot.long_short_returns
-        optimal_returns = moonshot.optimal_returns
+        dates = pd.date_range("2023-01-01", "2023-02-28", freq="D")
 
-        # Verify exact calculations
-        # Asset A: 100 -> 110, return = 0.10
-        # Asset B: 100 -> 105, return = 0.05
-        # Q1 (Asset A): 0.10
-        # Q2 (Asset B): 0.05
-        # Benchmark: (0.10 + 0.05) / 2 = 0.075
+        price_data = []
+        for date in dates:
+            month = date.month
+            if month == 1:
+                # Month 1
+                price_data.append(
+                    {"date": date, "asset": "A", "open": 100, "close": 110}
+                )
+                price_data.append(
+                    {"date": date, "asset": "B", "open": 200, "close": 210}
+                )
+                price_data.append(
+                    {"date": date, "asset": "C", "open": 300, "close": 315}
+                )
+            else:
+                # Month 2
+                price_data.append(
+                    {"date": date, "asset": "A", "open": 110, "close": 132}
+                )
+                price_data.append(
+                    {"date": date, "asset": "B", "open": 210, "close": 231}
+                )
+                price_data.append(
+                    {"date": date, "asset": "C", "open": 315, "close": 346.5}
+                )
 
-        expected_q1 = 0.10
-        expected_q2 = 0.05
-        expected_benchmark = 0.075
+        bars = pd.DataFrame(price_data)
+        ms = Moonshot(bars)
 
-        assert abs(quantile_returns.iloc[0, 0] - expected_q1) < 1e-10
-        assert abs(quantile_returns.iloc[0, 1] - expected_q2) < 1e-10
-        assert abs(benchmark_returns.iloc[0] - expected_benchmark) < 1e-10
+        # Calculate benchmark returns
+        benchmark_returns = ms._calculate_benchmark_returns()
 
-    def test_metrics_calculation_accuracy(self, simple_test_data):
-        """Test that metrics calculations are accurate"""
-        factor_series, bars = simple_test_data
+        # Expected values:
+        # Month 1: (110/100-1 + 210/200-1 + 315/300-1) / 3 = (0.1 + 0.05 + 0.05) / 3 = 0.066666...
+        # Month 2: (132/110-1 + 231/210-1 + 346.5/315-1) / 3 = (0.2 + 0.1 + 0.1) / 3 = 0.133333...
+        expected_returns = pd.Series(
+            [0.06666666666666667, 0.13333333333333333],
+            index=pd.period_range("2023-01", "2023-02", freq="M"),
+        )
 
-        moonshot = Moonshot()
-        moonshot.backtest(factor_series, bars, quantiles=2)
+        # Verify the results
+        pd.testing.assert_series_equal(
+            benchmark_returns, expected_returns, check_dtype=False
+        )
 
-        metrics = moonshot.calculate_metrics()
+    def test_discretize_continuous_factors(self, medium_test_data):
+        """Test _discretize_continuous_factors method"""
+        factor, bars = medium_test_data
+        ms = Moonshot(bars)
 
-        # Test specific metric calculations
-        # For long-short spread: Q2 - Q1 = 0.05 - 0.10 = -0.05
-        long_short_annual_return = metrics.loc["Ann. Returns", "long-short"]
-        expected_annual_return = -0.05 * 12  # -0.60 or -60%
+        # 增加一个新的资产
+        data = ms.data.xs("Stock_A", level="asset")
+        data["asset"] = "Stock_F"
+        data = data.set_index([data.index, "asset"])
+        ms.data = pd.concat([ms.data, data]).sort_index()
 
-        assert abs(long_short_annual_return - expected_annual_return) < 1e-10
+        data = np.random.choice([1, 0, -1], size=36)
+        factor = pd.DataFrame(data, columns=["factor_A"], index=ms.data.index)
+        ms.append_factor(factor, "factor_A")
+        count_A_1 = factor.query("factor_A == 1").shape[0]
 
-        # Win rate for long-short should be 0 (negative return)
-        long_short_win_rate = metrics.loc["Win Rate", "long-short"]
-        assert long_short_win_rate == 0.0
+        data = np.random.normal(size=36)
+        top = np.percentile(data, 80)
+        factor = pd.DataFrame(data, columns=["factor_B"], index=ms.data.index)
+        ms.append_factor(factor, "factor_B")
+        count_B_1 = factor.query("factor_B > @top").shape[0]
 
-        # Win rate for pure long (Q2) should be 1 (positive return)
-        pure_long_win_rate = metrics.loc["Win Rate", "long-only"]
-        assert pure_long_win_rate == 1.0
+        data = np.random.choice([1, 0, -1], size=36)
+        factor = pd.DataFrame(data, columns=["factor_C"], index=ms.data.index)
+        ms.append_factor(factor, "factor_C")
+
+        data = np.random.normal(size=36)
+        factor = pd.DataFrame(data, columns=["factor_D"], index=ms.data.index)
+        ms.append_factor(factor, "factor_D", quantiles=3)
+
+        ms._discretize_continuous_factors()
+        assert ms.factor_names == ["factor_A", "factor_B", "factor_C", "factor_D"]
+
+        # 离散型保持不变
+        assert len(ms.data.query("factor_A == 1")) == count_A_1
+        assert len(ms.data.query("factor_B == 1")) >= len(ms.data) / 6
+        assert len(ms.data.query("factor_B == -1")) >= len(ms.data) / 6
+
+        assert len(ms.data.query("factor_D == 1")) == 12
+        assert len(ms.data.query("factor_D == -1")) == 12
+
+    def test_merge_factors_to_flag(self, mnshot):
+        """Test merge_factors_to_flag method with simple data"""
+        factors = mnshot.data.copy()
+
+        factors["factor_1"] = [1, 0, -1, -1]
+        factors["factor_2"] = [1, 0, 0, -1]
+        factors["factor_3"] = [1, 1, 0, -1]
+
+        mnshot.append_factor(factors, "factor_1")
+        mnshot.append_factor(factors, "factor_2")
+        mnshot.append_factor(factors, "factor_3")
+
+        flags = mnshot._merge_factors_to_flag()
+        assert flags.values.tolist() == [1, 0, 0, -1]
+
+    def test_calculate_flag_returns(self, medium_test_data):
+        factors, daily_bars = medium_test_data
+        ms = Moonshot(daily_bars)
+
+        factors["a"] = [
+            1,
+            1,
+            1,
+            -1,
+            -1,
+            1,
+            1,
+            0,
+            -1,
+            -1,
+            1,
+            1,
+            0,
+            -1,
+            -1,
+            1,
+            0,
+            0,
+            -1,
+            1,
+            1,
+            0,
+            1,
+            -1,
+            1,
+        ]
+
+        ms.append_factor(factors, "a", resample="first")
+        actual = ms._calculate_flag_returns(ms.data["a"], True)
+        expect = pd.Series(
+            [0, 0.037, 0.031, 0.03, 0.062, 0.06],
+            index=pd.period_range("2023-01", "2023-06", freq="M"),
+        )
+
+        pd.testing.assert_series_equal(actual, expect, check_dtype=False, atol=1e-3)
+
+        actual = ms._calculate_flag_returns(ms.data["a"], False)
+        expect = pd.Series(
+            [0, -0.023, -0.031, -0.03, -0.01, -0.01],
+            index=pd.period_range("2023-01", "2023-06", freq="M"),
+        )
+
+        pd.testing.assert_series_equal(actual, expect, check_dtype=False, atol=1e-3)
+
+    def test_calculate_quantile_returns(self, medium_test_data):
+        """Test _calculate_quantile_returns method with simple data for easy verification"""
+        # Create test data with 5 assets and 2 months
+        # Assets have clear factor ranking and corresponding returns
+        dates = pd.date_range("2023-01-01", "2023-02-28", freq="D")
+        assets = ["A", "B", "C", "D", "E"]
+
+        # Create factor data with clear ranking (A lowest, E highest)
+        factor_data = []
+        for month in ["2023-01-31", "2023-02-28"]:
+            for i, asset in enumerate(assets):
+                factor_data.append(
+                    {
+                        "date": pd.to_datetime(month),
+                        "asset": asset,
+                        "factor": i + 1,  # A=1, B=2, C=3, D=4, E=5
+                    }
+                )
+
+        factor_df = pd.DataFrame(factor_data)
+
+        # Create price data with returns correlated to factor ranking
+        # Higher factor value -> higher return
+        price_data = []
+        base_returns = [0.01, 0.03, 0.05, 0.07, 0.09]  # A=1%, B=3%, C=5%, D=7%, E=9%
+
+        for date in dates:
+            month = date.month
+            for i, asset in enumerate(assets):
+                if month == 1:
+                    open_price = 100
+                    close_price = open_price * (1 + base_returns[i])
+                else:  # month == 2
+                    open_price = 100 * (1 + base_returns[i])
+                    close_price = open_price * (1 + base_returns[i])
+
+                price_data.append(
+                    {
+                        "date": date,
+                        "asset": asset,
+                        "open": open_price,
+                        "close": close_price,
+                    }
+                )
+
+        bars = pd.DataFrame(price_data)
+        ms = Moonshot(bars)
+
+        # Add factor to Moonshot instance
+        ms.append_factor(factor_df, "factor", resample="last")
+
+        # Test with long_only=True (should only use top quantile)
+        returns_long_only = ms._calculate_quantile_returns(long_only=True)
+
+        # With 5 quantiles, top quantile (quantile 4) should contain asset E with 9% return
+        # Expected returns: [0.09, 0.09] for month 1 and month 2
+        expected_returns_long_only = pd.Series(
+            [0.09, 0.09], index=pd.period_range("2023-01", "2023-02", freq="M")
+        )
+
+        pd.testing.assert_series_equal(
+            returns_long_only,
+            expected_returns_long_only,
+            check_dtype=False,
+            check_names=False,
+        )
+
+        # Test with long_only=False (should use top quantile minus bottom quantile)
+        returns_long_short = ms._calculate_quantile_returns(long_only=False)
+
+        # With 5 quantiles:
+        # Top quantile (quantile 4) contains asset E with 9% return
+        # Bottom quantile (quantile 0) contains asset A with 1% return
+        # Expected returns: [0.09 - 0.01, 0.09 - 0.01] = [0.08, 0.08]
+        expected_returns_long_short = pd.Series(
+            [0.08, 0.08], index=pd.period_range("2023-01", "2023-02", freq="M")
+        )
+
+        pd.testing.assert_series_equal(
+            returns_long_short,
+            expected_returns_long_short,
+            check_dtype=False,
+            check_names=False,
+        )
+
+        # Verify that quantile_returns are stored
+        assert hasattr(ms, "quantile_returns")
+        assert len(ms.quantile_returns) == 2  # Two months
+        assert all(
+            0 in month_returns for month_returns in ms.quantile_returns.values()
+        )  # Bottom quantile exists
+        assert all(
+            4 in month_returns for month_returns in ms.quantile_returns.values()
+        )  # Top quantile exists
+
+    def test_run_without_factor(self, simple_test_data):
+        """Test run method without adding any factor (should raise ValueError)"""
+        _, bars = simple_test_data
+        ms = Moonshot(bars)
+
+        # Should raise ValueError when no factor is added
+        with pytest.raises(ValueError) as excinfo:
+            ms.run()
+
+        assert "请先使用 append_factor 方法添加因子数据" in str(excinfo.value)
+
+    def test_run_with_single_discrete_factor(self, simple_test_data):
+        """Test run method with a single discrete factor"""
+        factors, bars = simple_test_data
+        ms = Moonshot(bars)
+
+        # Add discrete factor
+        factors["factor"] = [1, -1]  # Asset A: long, Asset B: short
+        ms.append_factor(factors, "factor", resample="first")
+
+        # Run with long_only=True
+        strategy_returns, benchmark_returns = ms.run(long_only=True)
+
+        index = ms.data.index.get_level_values("month").unique().sort_values()
+        index.name = None
+        expected_strategy_returns = pd.Series([0.05, 0], index=index)
+        expected_benchmark_returns = pd.Series([0.075, 0], index=index)
+
+        pd.testing.assert_series_equal(strategy_returns, expected_strategy_returns)
+        pd.testing.assert_series_equal(benchmark_returns, expected_benchmark_returns)
+
+        # Verify analyzer is initialized
+        assert hasattr(ms, "analyzer")
+        assert ms.analyzer is not None
+
+        # Run with long_only=False
+        strategy_returns_ls, benchmark_returns_ls = ms.run(long_only=False)
+
+        expected_strategy_returns = pd.Series([0.025, 0], index=index)
+        pd.testing.assert_series_equal(strategy_returns_ls, expected_strategy_returns)
+        pd.testing.assert_series_equal(benchmark_returns_ls, expected_benchmark_returns)
+
+    def test_run_with_single_continuous_factor(self, medium_test_data):
+        """Test run method with a single continuous factor"""
+        factors, bars = medium_test_data
+        ms = Moonshot(bars)
+
+        # Add continuous factor
+        ms.append_factor(factors, "factor", resample="last")
+
+        # Run with long_only=True
+        strategy_returns, benchmark_returns = ms.run(long_only=True)
+
+        expected_strategy_ret = (ms.data["close"] / ms.data["open"] - 1).xs(
+            "Stock_E", level="asset"
+        )
+        expected_strategy_ret.iloc[-1] = 0
+        expected_benchmark_ret = (
+            (ms.data["close"] / ms.data["open"] - 1).unstack(0).mean()
+        )
+        pd.testing.assert_series_equal(strategy_returns, expected_strategy_ret)
+        pd.testing.assert_series_equal(
+            benchmark_returns, expected_benchmark_ret, check_names=False
+        )
+
+        # Verify analyzer is initialized
+        assert hasattr(ms, "analyzer")
+        assert ms.analyzer is not None
+
+        # Run with long_only=False
+        strategy_returns_ls, benchmark_returns_ls = ms.run(long_only=False)
+
+        tmp = (ms.data["close"] / ms.data["open"] - 1).unstack(1)
+        expected_strategy_ret = tmp.loc[:, "Stock_E"] - tmp.loc[:, "Stock_A"]
+        expected_strategy_ret.iloc[-1] = 0
+        pd.testing.assert_series_equal(strategy_returns_ls, expected_strategy_ret)
+        pd.testing.assert_series_equal(
+            benchmark_returns_ls, expected_benchmark_ret, check_names=False
+        )
+
+    def test_run_with_multiple_factors(self, medium_test_data):
+        """Test run method with multiple factors"""
+        factors, bars = medium_test_data
+        factors["factor2"] = 6 - factors["factor"]
+        factors["factor3"] = [1] * len(factors)
+
+        ms = Moonshot(bars)
+        for col in ("factor", "factor2", "factor3"):
+            ms.append_factor(factors, col, resample="last")
+
+        # Run with long_only=True
+        strategy_returns, _ = ms.run(long_only=True)
+
+        # 由于factor 与 factor2正好相反，所以没有一个 asset 会得到全1
+        np.testing.assert_array_equal(strategy_returns.values, [0] * 6)
+
+        # 让stock_E, stock_D 会得到全1，其余为0
+        factors["factor4"] = 1
+        mask = factors["asset"].isin(["Stock_D", "Stock_E"])
+        factors.loc[mask, "factor4"] = 2
+
+        ms = Moonshot(bars)
+        for col in ("factor", "factor3", "factor4"):
+            ms.append_factor(factors, col, resample="last")
+
+        # Run with long_only=False
+        strategy_returns_ls, benchmark_returns_ls = ms.run(long_only=False)
+
+        # Verify returns are calculated
+        assert isinstance(strategy_returns_ls, pd.Series)
+        assert isinstance(benchmark_returns_ls, pd.Series)
+        assert len(strategy_returns_ls) == 5  # Five months of data
+        assert len(benchmark_returns_ls) == 5  # Five months of data
+
+    def test_run_return_values(self, simple_test_data):
+        """Test that run method returns correct strategy and benchmark returns"""
+        factors, bars = simple_test_data
+        ms = Moonshot(bars)
+
+        # Add discrete factor
+        factors["factor"] = [1, -1]  # Asset A: long, Asset B: short
+        ms.append_factor(factors, "factor", resample="first")
+
+        # Run with long_only=True
+        strategy_returns, benchmark_returns = ms.run(long_only=True)
+
+        # For long_only=True, strategy should only go long on Asset A (10% return)
+        # Benchmark should be average of both assets (7.5% return)
+        expected_strategy = pd.Series(
+            [0.1], index=pd.period_range("2023-01", "2023-01", freq="M")
+        )
+        expected_benchmark = pd.Series(
+            [0.075], index=pd.period_range("2023-01", "2023-01", freq="M")
+        )
+
+        pd.testing.assert_series_equal(
+            strategy_returns, expected_strategy, check_dtype=False
+        )
+        pd.testing.assert_series_equal(
+            benchmark_returns, expected_benchmark, check_dtype=False
+        )
+
+        # Run with long_only=False
+        strategy_returns, benchmark_returns = ms.run(long_only=False)
+
+        # For long_only=False, strategy should go long on Asset A (10% return) and short on Asset B (5% return)
+        # Expected strategy return: 10% - 5% = 5%
+        # Benchmark should still be average of both assets (7.5% return)
+        expected_strategy_ls = pd.Series(
+            [0.05], index=pd.period_range("2023-01", "2023-01", freq="M")
+        )
+
+        pd.testing.assert_series_equal(
+            strategy_returns, expected_strategy_ls, check_dtype=False
+        )
+        pd.testing.assert_series_equal(
+            benchmark_returns, expected_benchmark, check_dtype=False
+        )
