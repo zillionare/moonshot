@@ -612,3 +612,107 @@ class TestMoonshotClass:
         assert actual["Strategy"]["Start Period"] == "2023-01-01"
         assert actual["Strategy"]["End Period"] == "2023-06-01"
         assert abs(actual["Strategy"]["Cumulative Return"] - 0.54) < 1e-3
+
+    def test_plot_quantile_returns(self, medium_test_data):
+        """Test plot_quantile_returns method doesn't raise exceptions and doesn't block"""
+        factor_df, bars = medium_test_data
+        ms = Moonshot(bars)
+
+        # Append factor and run to generate quantile_returns data
+        ms.append_factor(factor_df, "factor", quantiles=3, resample="first")
+        strategy_returns = ms.run()
+
+        # Test basic plot without saving
+        try:
+            ms.plot_quantile_returns(show_cumulative=True)
+        except Exception as e:
+            pytest.fail(f"plot_quantile_returns raised an exception: {e}")
+
+        # Test plot with monthly returns
+        try:
+            ms.plot_quantile_returns(show_cumulative=False)
+        except Exception as e:
+            pytest.fail(
+                f"plot_quantile_returns with monthly returns raised an exception: {e}"
+            )
+
+        # Test plot with custom parameters
+        try:
+            ms.plot_quantile_returns(
+                figsize=(10, 6), title="自定义标题", font_family="Arial Unicode MS"
+            )
+        except Exception as e:
+            pytest.fail(
+                f"plot_quantile_returns with custom parameters raised an exception: {e}"
+            )
+
+        # Test plot with save path (using temp directory)
+        import os
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            save_path = os.path.join(tmpdir, "test_plot.png")
+            try:
+                ms.plot_quantile_returns(save_path=save_path)
+                # Check if file was created
+                assert os.path.exists(save_path)
+            except Exception as e:
+                pytest.fail(
+                    f"plot_quantile_returns with save_path raised an exception: {e}"
+                )
+
+    def test_plot_cumulative_returns(self, medium_test_data):
+        """Test plot_cumulative_returns method doesn't raise exceptions and doesn't block"""
+        factor_df, bars = medium_test_data
+        ms = Moonshot(bars)
+
+        # Append factor and run to generate strategy and benchmark returns
+        ms.append_factor(factor_df, "factor", quantiles=3, resample="first")
+        strategy_returns, benchmark_returns = ms.run()
+
+        # Test basic plot without saving
+        try:
+            ms.plot_cumulative_returns(strategy_returns, benchmark_returns)
+        except Exception as e:
+            pytest.fail(f"plot_strategy_vs_benchmark raised an exception: {e}")
+
+        # Test plot with custom parameters
+        try:
+            ms.plot_cumulative_returns(
+                strategy_returns,
+                benchmark_returns,
+                figsize=(10, 6),
+                title="自定义标题",
+                font_family="Arial Unicode MS",
+            )
+        except Exception as e:
+            pytest.fail(
+                f"plot_strategy_vs_benchmark with custom parameters raised an exception: {e}"
+            )
+
+        # Test plot with provided data
+        try:
+            ms.plot_cumulative_returns(
+                strategy=strategy_returns, benchmark=benchmark_returns
+            )
+        except Exception as e:
+            pytest.fail(
+                f"plot_strategy_vs_benchmark with provided data raised an exception: {e}"
+            )
+
+        # Test plot with save path (using temp directory)
+        import os
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            save_path = os.path.join(tmpdir, "test_strategy_benchmark_plot.png")
+            try:
+                ms.plot_cumulative_returns(
+                    strategy_returns, benchmark_returns, save_path=save_path
+                )
+                # Check if file was created
+                assert os.path.exists(save_path)
+            except Exception as e:
+                pytest.fail(
+                    f"plot_strategy_vs_benchmark with save_path raised an exception: {e}"
+                )

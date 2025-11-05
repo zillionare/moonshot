@@ -1,5 +1,6 @@
 from typing import List, Literal, Optional
 
+import matplotlib.pyplot as plt
 import pandas as pd
 import quantstats.reports
 import quantstats.stats
@@ -503,3 +504,148 @@ class Moonshot:
 
         func = getattr(quantstats.reports, kind)
         return func(strategy, benchmark, **kwargs)
+
+    def plot_quantile_returns(
+        self,
+        figsize: tuple[int, int] = (12, 8),
+        title: str = "分层收益走势图",
+        save_path: str | None = None,
+        show_cumulative: bool = True,
+        font_family: str = "SimHei",
+    ) -> None:
+        """绘制分层收益走势图
+
+        Args:
+            figsize: 图表大小，默认为 (12, 8)
+            title: 图表标题
+            save_path: 保存路径，如果提供则保存图表
+            show_cumulative: 是否显示累计收益，默认为 True
+            font_family: 字体族，默认为 SimHei（黑体），用于支持中文显示
+        """
+        if self.quantile_returns is None:
+            raise ValueError("请先运行 run 方法以计算分层收益数据。注意：只有连续因子才会计算分层收益。")
+
+        # 设置中文字体支持
+        plt.rcParams["font.sans-serif"] = [
+            font_family,
+            "Arial Unicode MS",
+            "DejaVu Sans",
+        ]
+        plt.rcParams["axes.unicode_minus"] = False  # 解决负号显示问题
+
+        # 创建图表
+        fig, ax = plt.subplots(figsize=figsize)
+
+        # 如果显示累计收益，则计算累计收益
+        if show_cumulative:
+            plot_data = (1 + self.quantile_returns).cumprod()
+            ylabel = "累计收益"
+        else:
+            plot_data = self.quantile_returns
+            ylabel = "月度收益"
+
+        # 绘制各分层的收益曲线
+        for col in plot_data.columns:
+            ax.plot(
+                plot_data.index.to_timestamp(),
+                plot_data[col],
+                label=f"分层 {col+1}",
+                linewidth=2,
+            )
+
+        # 设置图表标题和标签
+        ax.set_title(title, fontsize=16)
+        ax.set_xlabel("时间", fontsize=12)
+        ax.set_ylabel(ylabel, fontsize=12)
+        ax.legend(loc="best")
+        ax.grid(True, linestyle="--", alpha=0.7)
+
+        # 优化日期显示
+        fig.autofmt_xdate()
+
+        # 如果提供了保存路径，则保存图表
+        if save_path:
+            plt.savefig(save_path, dpi=300, bbox_inches="tight")
+            logger.info(f"图表已保存至: {save_path}")
+
+        # 显示图表
+        plt.tight_layout()
+        plt.show()
+
+    def plot_cumulative_returns(
+        self,
+        strategy: pd.Series,
+        benchmark: pd.Series,
+        figsize: tuple[int, int] = (12, 8),
+        title: str = "策略与基准收益走势对比",
+        save_path: str | None = None,
+        font_family: str = "SimHei",
+    ) -> None:
+        """绘制策略与基准收益走势对比图
+
+        Args:
+            strategy: 策略收益序列，如果为None则使用self.strategy_returns
+            benchmark: 基准收益序列，如果为None则使用self.benchmark_returns
+            figsize: 图表大小，默认为 (12, 8)
+            title: 图表标题
+            save_path: 保存路径，如果提供则保存图表
+            show_cumulative: 是否显示累计收益，默认为 True
+            font_family: 字体族，默认为 SimHei（黑体），用于支持中文显示
+        """
+        # 设置中文字体支持
+        plt.rcParams["font.sans-serif"] = [
+            font_family,
+            "Arial Unicode MS",
+            "DejaVu Sans",
+        ]
+        plt.rcParams["axes.unicode_minus"] = False  # 解决负号显示问题
+
+        # 创建图表
+        fig, ax = plt.subplots(figsize=figsize)
+
+        strategy_data = (1 + strategy).cumprod()
+        benchmark_data = (1 + benchmark).cumprod()
+        ylabel = "累计收益"
+
+        # 确保数据是时间戳格式，便于绘图
+        if isinstance(strategy_data.index, pd.PeriodIndex):
+            strategy_data = strategy_data.to_timestamp()
+        if isinstance(benchmark_data.index, pd.PeriodIndex):
+            benchmark_data = benchmark_data.to_timestamp()
+
+        # 绘制策略和基准的收益曲线
+        ax.plot(
+            strategy_data.index,
+            strategy_data,
+            label="策略收益",
+            linewidth=2,
+            color="blue",
+        )
+
+        ax.plot(
+            benchmark_data.index,
+            benchmark_data,
+            label="基准收益",
+            linewidth=2,
+            color="red",
+            linestyle="--",
+        )
+
+        # 设置图表标题和标签
+        ax.set_title(title, fontsize=16)
+        ax.set_xlabel("时间", fontsize=12)
+        ax.set_ylabel(ylabel, fontsize=12)
+        ax.legend(loc="best")
+        ax.grid(True, linestyle="--", alpha=0.7)
+
+        # 优化日期显示
+        fig.autofmt_xdate()
+
+        # 如果提供了保存路径，则保存图表
+        if save_path:
+            plt.savefig(save_path, dpi=300, bbox_inches="tight")
+            logger.info(f"图表已保存至: {save_path}")
+
+        # 显示图表
+        plt.tight_layout()
+        plt.show()
