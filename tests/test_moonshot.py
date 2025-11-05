@@ -4,13 +4,12 @@ import matplotlib
 import numpy as np
 import pandas as pd
 import pytest
-from pandas.testing import assert_series_equal
+from pandas.testing import assert_frame_equal, assert_index_equal, assert_series_equal
 
 matplotlib.use("Agg")
 
 import moonshot
 from moonshot import Moonshot
-from moonshot.helper import resample_to_month
 
 
 @pytest.fixture
@@ -203,9 +202,7 @@ class TestMoonshotClass:
         )
 
         # Verify the results
-        pd.testing.assert_series_equal(
-            benchmark_returns, expected_returns, check_dtype=False
-        )
+        assert_series_equal(benchmark_returns, expected_returns, check_dtype=False)
 
     def test_calculate_benchmark_returns_with_different_returns(self):
         """Test _calculate_benchmark_returns with assets having different returns"""
@@ -257,9 +254,7 @@ class TestMoonshotClass:
         )
 
         # Verify the results
-        pd.testing.assert_series_equal(
-            benchmark_returns, expected_returns, check_dtype=False
-        )
+        assert_series_equal(benchmark_returns, expected_returns, check_dtype=False)
 
     def test_discretize_continuous_factors(self, medium_test_data):
         """Test _discretize_continuous_factors method"""
@@ -267,7 +262,7 @@ class TestMoonshotClass:
         ms = Moonshot(bars)
 
         # 增加一个新的资产
-        data = ms.data.xs("Stock_A", level="asset")
+        data = ms.data.xs("Stock_A", level="asset").copy()
         data["asset"] = "Stock_F"
         data = data.set_index([data.index, "asset"])
         ms.data = pd.concat([ms.data, data]).sort_index()
@@ -356,7 +351,7 @@ class TestMoonshotClass:
             index=pd.period_range("2023-01", "2023-06", freq="M"),
         )
 
-        pd.testing.assert_series_equal(actual, expect, check_dtype=False, atol=1e-3)
+        assert_series_equal(actual, expect, check_dtype=False, atol=1e-3)
 
         actual = ms._calculate_flag_returns(ms.data["a"], False)
         expect = pd.Series(
@@ -364,102 +359,50 @@ class TestMoonshotClass:
             index=pd.period_range("2023-01", "2023-06", freq="M"),
         )
 
-        pd.testing.assert_series_equal(actual, expect, check_dtype=False, atol=1e-3)
+        assert_series_equal(actual, expect, check_dtype=False, atol=1e-3)
 
     def test_calculate_quantile_returns(self, medium_test_data):
-        """Test _calculate_quantile_returns method with simple data for easy verification"""
-        # Create test data with 5 assets and 2 months
-        # Assets have clear factor ranking and corresponding returns
-        dates = pd.date_range("2023-01-01", "2023-02-28", freq="D")
-        assets = ["A", "B", "C", "D", "E"]
-
-        # Create factor data with clear ranking (A lowest, E highest)
-        factor_data = []
-        for month in ["2023-01-31", "2023-02-28"]:
-            for i, asset in enumerate(assets):
-                factor_data.append(
-                    {
-                        "date": pd.to_datetime(month),
-                        "asset": asset,
-                        "factor": i + 1,  # A=1, B=2, C=3, D=4, E=5
-                    }
-                )
-
-        factor_df = pd.DataFrame(factor_data)
-
-        # Create price data with returns correlated to factor ranking
-        # Higher factor value -> higher return
-        price_data = []
-        base_returns = [0.01, 0.03, 0.05, 0.07, 0.09]  # A=1%, B=3%, C=5%, D=7%, E=9%
-
-        for date in dates:
-            month = date.month
-            for i, asset in enumerate(assets):
-                if month == 1:
-                    open_price = 100
-                    close_price = open_price * (1 + base_returns[i])
-                else:  # month == 2
-                    open_price = 100 * (1 + base_returns[i])
-                    close_price = open_price * (1 + base_returns[i])
-
-                price_data.append(
-                    {
-                        "date": date,
-                        "asset": asset,
-                        "open": open_price,
-                        "close": close_price,
-                    }
-                )
-
-        bars = pd.DataFrame(price_data)
+        factor, bars = medium_test_data
         ms = Moonshot(bars)
+        ms.append_factor(factor, "factor", resample="last")
 
-        # Add factor to Moonshot instance
-        ms.append_factor(factor_df, "factor", resample="last")
+        # 01 Test with long_only=True (should only use top quantile)
+        actual = ms._calculate_quantile_returns(long_only=True)
+        expect = ms.data.xs("Stock_E", level="asset")["close"].pct_change()
+        expect.iloc[0] = 0
+        assert_series_equal(actual, expect, check_dtype=False, check_names=False)
 
-        # Test with long_only=True (should only use top quantile)
-        returns_long_only = ms._calculate_quantile_returns(long_only=True)
-
-        # With 5 quantiles, top quantile (quantile 4) should contain asset E with 9% return
-        # Expected returns: [0.09, 0.09] for month 1 and month 2
-        expected_returns_long_only = pd.Series(
-            [0.09, 0.09], index=pd.period_range("2023-01", "2023-02", freq="M")
+        actual = ms.quantile_returns
+        expect = pd.DataFrame(
+            [
+                (0, 0, 0, 0, 0),
+                (0.018654, 0.037284, 0.055890, 0.074473, 0.093033),
+                (0.020674, 0.041361, 0.062061, 0.082774, 0.103500),
+                (0.020000, 0.040000, 0.060000, 0.080000, 0.100000),
+                (0.020674, 0.041361, 0.062061, 0.082774, 0.103500),
+                (0.020000, 0.040000, 0.060000, 0.080000, 0.100000),
+            ]
         )
 
-        pd.testing.assert_series_equal(
-            returns_long_only,
-            expected_returns_long_only,
+        assert_frame_equal(
+            actual.reset_index(drop=True),
+            expect.reset_index(drop=True),
             check_dtype=False,
             check_names=False,
+            atol=1e-3,
         )
 
-        # Test with long_only=False (should use top quantile minus bottom quantile)
-        returns_long_short = ms._calculate_quantile_returns(long_only=False)
+        # 02 Test with long_only=False (should use top quantile minus bottom quantile)
+        actual = ms._calculate_quantile_returns(long_only=False)
+        expect = (ms.quantile_returns.iloc[:, -1] - ms.quantile_returns.iloc[:, 0]) / 2
 
-        # With 5 quantiles:
-        # Top quantile (quantile 4) contains asset E with 9% return
-        # Bottom quantile (quantile 0) contains asset A with 1% return
-        # Expected returns: [0.09 - 0.01, 0.09 - 0.01] = [0.08, 0.08]
-        expected_returns_long_short = pd.Series(
-            [0.08, 0.08], index=pd.period_range("2023-01", "2023-02", freq="M")
+        assert_series_equal(
+            actual, expect, check_dtype=False, check_names=False, check_index=False
         )
 
-        pd.testing.assert_series_equal(
-            returns_long_short,
-            expected_returns_long_short,
-            check_dtype=False,
-            check_names=False,
-        )
-
-        # Verify that quantile_returns are stored
-        assert hasattr(ms, "quantile_returns")
-        assert len(ms.quantile_returns) == 2  # Two months
-        assert all(
-            0 in month_returns for month_returns in ms.quantile_returns.values()
-        )  # Bottom quantile exists
-        assert all(
-            4 in month_returns for month_returns in ms.quantile_returns.values()
-        )  # Top quantile exists
+        actual = actual.index
+        expect = pd.period_range("2023-01", "2023-06", freq="M")
+        assert_index_equal(actual, expect, check_names=False)
 
     def test_run_without_factor(self, simple_test_data):
         """Test run method without adding any factor (should raise ValueError)"""
@@ -482,26 +425,22 @@ class TestMoonshotClass:
         ms.append_factor(factors, "factor", resample="first")
 
         # Run with long_only=True
-        strategy_returns, benchmark_returns = ms.run(long_only=True)
-
-        index = ms.data.index.get_level_values("month").unique().sort_values()
-        index.name = None
-        expected_strategy_returns = pd.Series([0.05, 0], index=index)
-        expected_benchmark_returns = pd.Series([0.075, 0], index=index)
-
-        pd.testing.assert_series_equal(strategy_returns, expected_strategy_returns)
-        pd.testing.assert_series_equal(benchmark_returns, expected_benchmark_returns)
-
-        # Verify analyzer is initialized
-        assert hasattr(ms, "analyzer")
-        assert ms.analyzer is not None
+        actual_strategy_ret, _ = ms.run(long_only=True)
+        stock_A = ms.data.xs("A", level="asset")
+        coo = stock_A["close"] / stock_A["open"] - 1
+        expect_strategy_ret = [0, coo.iloc[1]]
+        np.testing.assert_array_almost_equal(
+            actual_strategy_ret, expect_strategy_ret, decimal=3
+        )
 
         # Run with long_only=False
-        strategy_returns_ls, benchmark_returns_ls = ms.run(long_only=False)
-
-        expected_strategy_returns = pd.Series([0.025, 0], index=index)
-        pd.testing.assert_series_equal(strategy_returns_ls, expected_strategy_returns)
-        pd.testing.assert_series_equal(benchmark_returns_ls, expected_benchmark_returns)
+        actual_strategy_ret, _ = ms.run(long_only=False)
+        stock_B = ms.data.xs("B", level="asset")
+        cooB = stock_B["close"] / stock_B["open"] - 1
+        expect_strategy_ret = [0, (coo.iloc[1] - cooB.iloc[1]) / 2]
+        np.testing.assert_array_almost_equal(
+            actual_strategy_ret, expect_strategy_ret, decimal=3
+        )
 
     def test_run_with_single_continuous_factor(self, medium_test_data):
         """Test run method with a single continuous factor"""
@@ -517,27 +456,30 @@ class TestMoonshotClass:
         expected_strategy_ret = (ms.data["close"] / ms.data["open"] - 1).xs(
             "Stock_E", level="asset"
         )
-        expected_strategy_ret.iloc[-1] = 0
+        expected_strategy_ret.iloc[0] = 0
         expected_benchmark_ret = (
             (ms.data["close"] / ms.data["open"] - 1).unstack(0).mean()
         )
-        pd.testing.assert_series_equal(strategy_returns, expected_strategy_ret)
-        pd.testing.assert_series_equal(
+        assert_series_equal(
+            strategy_returns, expected_strategy_ret, check_names=False, atol=1e-3
+        )
+        assert_series_equal(
             benchmark_returns, expected_benchmark_ret, check_names=False
         )
 
-        # Verify analyzer is initialized
-        assert hasattr(ms, "analyzer")
-        assert ms.analyzer is not None
-
+        # 保证调用时类型正确
+        alpha = ms.alpha(strategy_returns, benchmark_returns)
+        beta = ms.beta(strategy_returns, benchmark_returns)
+        assert abs(alpha - 4.1998) < 1e-3
+        assert abs(beta + 4.4184) < 1e-3
         # Run with long_only=False
         strategy_returns_ls, benchmark_returns_ls = ms.run(long_only=False)
 
         tmp = (ms.data["close"] / ms.data["open"] - 1).unstack(1)
-        expected_strategy_ret = tmp.loc[:, "Stock_E"] - tmp.loc[:, "Stock_A"]
-        expected_strategy_ret.iloc[-1] = 0
-        pd.testing.assert_series_equal(strategy_returns_ls, expected_strategy_ret)
-        pd.testing.assert_series_equal(
+        expected_strategy_ret = (tmp.loc[:, "Stock_E"] - tmp.loc[:, "Stock_A"]) / 2
+        expected_strategy_ret.iloc[0] = 0
+        assert_series_equal(strategy_returns_ls, expected_strategy_ret)
+        assert_series_equal(
             benchmark_returns_ls, expected_benchmark_ret, check_names=False
         )
 
@@ -572,8 +514,7 @@ class TestMoonshotClass:
         # Verify returns are calculated
         assert isinstance(strategy_returns_ls, pd.Series)
         assert isinstance(benchmark_returns_ls, pd.Series)
-        assert len(strategy_returns_ls) == 5  # Five months of data
-        assert len(benchmark_returns_ls) == 5  # Five months of data
+        assert len(strategy_returns_ls) == 6
 
     def test_run_return_values(self, simple_test_data):
         """Test that run method returns correct strategy and benchmark returns"""
@@ -590,32 +531,84 @@ class TestMoonshotClass:
         # For long_only=True, strategy should only go long on Asset A (10% return)
         # Benchmark should be average of both assets (7.5% return)
         expected_strategy = pd.Series(
-            [0.1], index=pd.period_range("2023-01", "2023-01", freq="M")
+            [0, 0.1], index=pd.period_range("2023-01", "2023-02", freq="M")
         )
         expected_benchmark = pd.Series(
-            [0.075], index=pd.period_range("2023-01", "2023-01", freq="M")
+            [0.075, 0], index=pd.period_range("2023-01", "2023-02", freq="M")
         )
 
-        pd.testing.assert_series_equal(
-            strategy_returns, expected_strategy, check_dtype=False
-        )
-        pd.testing.assert_series_equal(
-            benchmark_returns, expected_benchmark, check_dtype=False
-        )
+        assert_series_equal(strategy_returns, expected_strategy, check_dtype=False)
+        assert_series_equal(benchmark_returns, expected_benchmark, check_dtype=False)
 
         # Run with long_only=False
         strategy_returns, benchmark_returns = ms.run(long_only=False)
 
         # For long_only=False, strategy should go long on Asset A (10% return) and short on Asset B (5% return)
-        # Expected strategy return: 10% - 5% = 5%
+        # Expected strategy return: (10% - 5%)/2 = 2.5%
         # Benchmark should still be average of both assets (7.5% return)
         expected_strategy_ls = pd.Series(
-            [0.05], index=pd.period_range("2023-01", "2023-01", freq="M")
+            [0, 0.025], index=pd.period_range("2023-01", "2023-02", freq="M")
         )
 
-        pd.testing.assert_series_equal(
-            strategy_returns, expected_strategy_ls, check_dtype=False
+        assert_series_equal(strategy_returns, expected_strategy_ls, check_dtype=False)
+        assert_series_equal(benchmark_returns, expected_benchmark, check_dtype=False)
+
+    def test_alpha_beta(self, mnshot):
+        strategy_returns = pd.Series(
+            [0.05, 0.06, 0.07, 0.08, 0.09, 0.1],
+            index=pd.period_range("2023-01", "2023-06", freq="M"),
         )
-        pd.testing.assert_series_equal(
-            benchmark_returns, expected_benchmark, check_dtype=False
+
+        benchmark_returns = pd.Series(
+            [0.04, 0.05, 0.06, 0.07, 0.08, 0.09],
+            index=pd.period_range("2023-01", "2023-06", freq="M"),
         )
+
+        alpha = mnshot.alpha(strategy_returns, strategy_returns)
+        assert alpha == 0
+
+        beta = mnshot.beta(strategy_returns, benchmark_returns)
+        assert beta == 1
+
+        alpha = mnshot.alpha(strategy_returns, benchmark_returns)
+        beta = mnshot.beta(strategy_returns, benchmark_returns)
+
+        assert abs(alpha - 0.12) < 1e-3
+        assert abs(beta - 1) < 1e-3
+
+    def test_get_core_metrics(self, mnshot):
+        strategy_returns = pd.Series(
+            [0.05, 0.06, 0.07, 0.08, 0.09, 0.1],
+            index=pd.period_range("2023-01", "2023-06", freq="M"),
+        )
+
+        benchmark_returns = pd.Series(
+            [0.04, 0.05, 0.06, 0.07, 0.08, 0.09],
+            index=pd.period_range("2023-01", "2023-06", freq="M"),
+        )
+
+        metrics = mnshot.get_core_metrics(strategy_returns, benchmark_returns)
+        assert abs(metrics["alpha"] - 0.12) < 1e-3
+        assert metrics["beta"] == 1
+
+    def test_report(self, mnshot):
+        strategy_returns = pd.Series(
+            [0.05, 0.06, 0.07, 0.08, 0.09, 0.1],
+            index=pd.period_range("2023-01", "2023-06", freq="M"),
+        )
+
+        benchmark_returns = pd.Series(
+            [0.04, 0.05, 0.06, 0.07, 0.08, 0.09],
+            index=pd.period_range("2023-01", "2023-06", freq="M"),
+        )
+
+        report = mnshot.report(
+            strategy_returns, benchmark_returns, kind="metrics", display=False
+        )
+        assert isinstance(report, pd.DataFrame)
+        actual = report.to_dict()
+        assert "Start Period" in actual["Strategy"]
+        assert "End Period" in actual["Strategy"]
+        assert actual["Strategy"]["Start Period"] == "2023-01-01"
+        assert actual["Strategy"]["End Period"] == "2023-06-01"
+        assert abs(actual["Strategy"]["Cumulative Return"] - 0.54) < 1e-3

@@ -70,8 +70,9 @@ def resample_to_month(data: pd.DataFrame, **kwargs) -> pd.DataFrame:
 
     # 构建聚合表达式列表
     agg_exprs = []
+    df_columns = df.collect_schema().names()  # 获取列名，避免性能警告
     for col_name, method in kwargs.items():
-        if col_name not in df.columns:
+        if col_name not in df_columns:
             raise ValueError(f"数据中不存在列: {col_name}")
 
         # 检查聚合方式是否支持
@@ -109,6 +110,10 @@ def qfq_adjustment(df: pd.DataFrame, adj_factor_col: str = "adjust") -> pd.DataF
     Returns:
         复权后的pandas DataFrame
     """
+    # 处理空DataFrame的情况
+    if df.empty:
+        return df.copy()
+
     lf = pl.from_pandas(df).lazy()
 
     # 按asset分组，计算每个股票的最新复权因子
@@ -149,58 +154,4 @@ def qfq_adjustment(df: pd.DataFrame, adj_factor_col: str = "adjust") -> pd.DataF
         .collect()  # 执行lazy计算
     )
 
-    return result.to_pandas()
-
-
-def hfq_adjustment(
-    df: pd.DataFrame, adj_factor_col: str = "adj_factor"
-) -> pd.DataFrame:
-    """
-    后复权算法 (hfq - 后复权)
-    以历史价格为基准，调整后续价格
-    成交量不调整，保持原始值
-
-    Args:
-        df: pandas DataFrame，包含asset, open, high, low, close, volume, adj_factor列
-        adj_factor_col: 复权因子列名，默认为"adj_factor"
-
-    Returns:
-        复权后的pandas DataFrame
-    """
-    lf = pl.from_pandas(df).lazy()
-
-    result = (
-        lf.with_columns(
-            [pl.col(adj_factor_col).last().over("asset").alias("latest_adj_factor")]
-        )
-        .with_columns(
-            [
-                # 后复权价格计算：price * latest_adj_factor / adj_factor
-                (
-                    pl.col("open")
-                    * pl.col("latest_adj_factor")
-                    / pl.col(adj_factor_col)
-                ).alias("open"),
-                (
-                    pl.col("high")
-                    * pl.col("latest_adj_factor")
-                    / pl.col(adj_factor_col)
-                ).alias("high"),
-                (
-                    pl.col("low") * pl.col("latest_adj_factor") / pl.col(adj_factor_col)
-                ).alias("low"),
-                (
-                    pl.col("close")
-                    * pl.col("latest_adj_factor")
-                    / pl.col(adj_factor_col)
-                ).alias("close"),
-                # 后复权成交量：不调整，保持原始值
-                pl.col("volume").alias("volume"),
-            ]
-        )
-        .drop("latest_adj_factor")
-        .collect()  # 执行lazy计算
-    )
-
-    # 转换回pandas DataFrame
     return result.to_pandas()

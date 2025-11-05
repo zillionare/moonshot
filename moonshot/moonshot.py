@@ -1,13 +1,11 @@
 from typing import List, Literal, Optional
 
-import numpy as np
 import pandas as pd
-import polars as pl
-import quantstats as qs
+import quantstats.reports
+import quantstats.stats
 from loguru import logger
 
 from moonshot.helper import resample_to_month
-from moonshot.performance_analyzer import PerformanceAnalyzer
 
 
 class Moonshot:
@@ -30,7 +28,6 @@ class Moonshot:
         # 初始化策略和分析器
         self.strategy_returns: Optional[pd.Series] = None
         self.benchmark_returns: Optional[pd.Series] = None
-        self.analyzer: PerformanceAnalyzer | None = None
         self.quantile_returns: Optional[pd.DataFrame] = None
 
         # 初始化因子相关属性
@@ -101,17 +98,6 @@ class Moonshot:
 
             factor_data = resample_to_month(factor_data, **{factor_col: resample})
 
-        # 确保索引是month, asset的MultiIndex
-        if not isinstance(
-            factor_data.index, pd.MultiIndex
-        ) or factor_data.index.names != ["month", "asset"]:
-            if "date" in factor_data.columns and "asset" in factor_data.columns:
-                factor_data["date"] = pd.to_datetime(factor_data["date"])
-                factor_data["month"] = factor_data["date"].dt.to_period("M")
-                factor_data = factor_data.set_index(["month", "asset"])
-            else:
-                raise ValueError("因子数据必须包含'month', 'asset'索引或'date', 'asset'列")
-
         self.data[factor_col] = factor_data[factor_col]
 
     def run(self, long_only: bool = True) -> tuple[pd.Series, pd.Series]:
@@ -135,17 +121,12 @@ class Moonshot:
         else:
             self.strategy_returns = self._calculate_multiple_factors_returns(long_only)
 
-        # 初始化分析器
-        self._initialize_performance_analyzer(
-            self.strategy_returns, self.benchmark_returns
-        )
-
         return self.strategy_returns, self.benchmark_returns
 
     def _calculate_benchmark_returns(self) -> pd.Series:
         """计算基准收益（买入并持有策略）
 
-        第一个月收益是 close/open-1，此后每月为 close/prev(close)-1
+        第一个月收益是 close/open-1，此后每月为 close/prev(close)-1。因此返回的收益序列长度与 month 索引等长，很好地反映了作为基准，买入并持有的收益。
 
         Returns:
             pd.Series: 基准收益序列，以月为单位
@@ -293,7 +274,7 @@ class Moonshot:
 
         # 计算is_new标记
         prev = data_with_flag.groupby("asset")["flag"].shift(1)
-        prev = prev.where(prev.abs() == 1, 0)  # 可选：非 ±1 视作 0
+        prev = prev.where(prev.abs() == 1, 0)
 
         # 判断新开仓
         data_with_flag["is_new"] = (
@@ -369,17 +350,6 @@ class Moonshot:
 
         return average_return * position_type
 
-    def _initialize_performance_analyzer(
-        self, strategy_returns: pd.Series, benchmark_returns: pd.Series
-    ) -> None:
-        """初始化性能分析器
-
-        Args:
-            strategy_returns: 策略收益序列
-            benchmark_returns: 基准收益序列
-        """
-        self.analyzer = PerformanceAnalyzer(strategy_returns, benchmark_returns)
-
     def _calculate_quantile_returns(self, long_only: bool) -> pd.Series:
         """计算连续因子的分层收益
 
@@ -426,6 +396,110 @@ class Moonshot:
                 quantile_returns.iloc[:, -1] - quantile_returns.iloc[:, 0]
             ) / divider
 
-        self.quantile_returns = quantile_returns
+        index = data_with_factor.index.levels[0]
+        self.quantile_returns = pd.DataFrame(quantile_returns, index=index)
+        self.quantile_returns.fillna(0, inplace=True)
 
-        return strategy_returns
+        strategy_returns = pd.Series(strategy_returns, index=index)
+        return strategy_returns.fillna(0)
+
+    def get_core_metrics(
+        self, strategy: pd.Series, benchmark: pd.Series | None = None, rf=0
+    ) -> dict:
+        """返回核心评估指标
+
+        Args:
+            strategy (pd.Series): 策略收益，由 run 方法返回
+            benchmark (pd.Series): 基准收益，由 run 方法返回
+
+        Returns:
+            dict: 评估指标
+        """
+        strategy = strategy.to_timestamp()
+        if benchmark is not None:
+            benchmark = benchmark.to_timestamp()
+
+        nv = (1 + strategy).cumprod() - 1
+        metrics = {
+            "cagr": quantstats.stats.cagr(strategy, rf=rf, periods=12),
+            "sharpe": quantstats.stats.sharpe(strategy, rf=rf, periods=12),
+            "mdd": quantstats.stats.max_drawdown(nv),
+            "sortino": quantstats.stats.sortino(strategy, rf=rf, periods=12),
+            "calmar": quantstats.stats.calmar(strategy),
+            "win_rate": quantstats.stats.win_rate(strategy),
+        }
+
+        # 如果有基准数据，添加超额收益指标
+        if benchmark is not None:
+            metrics.update(
+                {
+                    "alpha": self.alpha(
+                        strategy,
+                        benchmark,
+                        periods=12,
+                    ),
+                    "beta": self.beta(
+                        strategy,
+                        benchmark,
+                        periods=12,
+                    ),
+                }
+            )
+
+        return metrics
+
+    def alpha(
+        self, strategy: pd.Series, benchmark: pd.Series | None = None, periods=12
+    ) -> float:
+        """quantstats 没有直接定义 alpha/beta，需要通过 greeks 来调用
+
+        !!! warning:
+            quantstats 中的 alpha 年化方法并不准确，但为了保持数据一致性，
+            我们仍然使用该方法。因为在它的 report 中，也会出现 alpha
+        """
+        if isinstance(strategy.index, pd.PeriodIndex):
+            strategy = strategy.to_timestamp()
+        if benchmark is not None and isinstance(benchmark.index, pd.PeriodIndex):
+            benchmark = benchmark.to_timestamp()
+
+        greeks = quantstats.stats.greeks(
+            strategy, benchmark, periods, prepare_returns=False
+        )
+
+        return greeks.to_dict().get("alpha", 0)  # type: ignore
+
+    def beta(
+        self, strategy: pd.Series, benchmark: pd.Series | None = None, periods=12
+    ) -> float:
+        """quantstats 没有直接定义 alpha/beta，需要通过 greeks 来调用"""
+        if isinstance(strategy.index, pd.PeriodIndex):
+            strategy = strategy.to_timestamp()
+        if benchmark is not None and isinstance(benchmark.index, pd.PeriodIndex):
+            benchmark = benchmark.to_timestamp()
+
+        greeks = quantstats.stats.greeks(
+            strategy, benchmark, periods, prepare_returns=False
+        )
+
+        return greeks.to_dict().get("beta", 0)  # type: ignore
+
+    def report(
+        self,
+        strategy: pd.Series,
+        benchmark: pd.Series | None = None,
+        kind: Literal["html", "full", "basic", "metrics", "plots"] = "html",
+        **kwargs,
+    ):
+        """生成回测报告
+
+        Args:
+            strategy: 策略收益序列
+            benchmark: 基准收益序列
+            kind: 报告类型,参见 quantstats.report
+        """
+        strategy = strategy.to_timestamp()
+        if benchmark is not None:
+            benchmark = benchmark.to_timestamp()
+
+        func = getattr(quantstats.reports, kind)
+        return func(strategy, benchmark, **kwargs)
