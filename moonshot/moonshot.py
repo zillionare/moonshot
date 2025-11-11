@@ -1,4 +1,4 @@
-from typing import List, Literal, Optional
+from typing import Callable, List, Literal, Optional
 
 import matplotlib.pyplot as plt
 import pandas as pd
@@ -33,16 +33,15 @@ class Moonshot:
 
         # 初始化因子相关属性
         self.factor_names: List[str] = []  # 这些列会被当成因子
-        self.factor_types: list[str] = []  # 记录每个因子的类型（'discrete'或'continuous'）
-        self.factor_quantiles = []  # 记录每个连续因子的分层数
+        self.factor_transformers: list[Callable | int | None] = []  # 分层数，或者转换函数
 
-    def check_factor_type(self, factor: pd.Series) -> Literal["discrete", "continuous"]:
+    def is_signals(self, factor: pd.Series) -> bool:
         """检查因子类型"""
         values = set(factor.unique())
         if set(values).issubset({-1, 0, 1}):
-            return "discrete"
+            return True
 
-        return "continuous"
+        return False
 
     def is_month_indexed(self, df: pd.DataFrame | pd.Series) -> bool:
         """检查DataFrame是否按月份索引"""
@@ -57,14 +56,19 @@ class Moonshot:
         factor_col: str,
         quantiles: Optional[int] = None,
         resample: str | None = None,
+        transform: Callable | None = None,
     ) -> None:
         """将因子数据添加到回测数据(即self.data)中。
 
+        加入进来的因子可以是能直接交易的信号(1, 0, -1，分别表示做多、不操作和做空），也可以是通过分层来决定做多做空的因子，也可以是其它，通过transform 可以转换成为交易信号。
+
+        如果直接是交易信号，则 quantiles, transfrom 都被忽略；如果是其它，优先使用 quantiles 进行分层；如果 quantiles 未指定但 tranform 存在，则将通过 transform 进行转换
         Args:
             data: 因子数据，需包含'date'和'asset'列
             factor_col: 因子列名
             quantiles: 对于连续因子，指定分层数量
             resample: 如果 data 未按月份索引，需要指定重采样方法，比如 first, last, max 等
+            transform: 对因子数据进行转换的函数，比如 np.log, lambda x: x ** 2 等。默认不进行转换。
         """
         if isinstance(data, pd.Series):
             data = data.to_frame(name=factor_col)
@@ -77,13 +81,14 @@ class Moonshot:
 
         self.factor_names.append(factor_col)
 
-        factor_type = self.check_factor_type(data[factor_col])
-        self.factor_types.append(factor_type)
+        if (
+            quantiles is None
+            and transform is None
+            and not self.is_signals(data[factor_col])
+        ):
+            raise AssertionError("因子数据要么是信号数据，要么提供 quantiles 或 transform 参数，以转换成信号")
 
-        if factor_type == "discrete" and quantiles is not None:
-            logger.warning("因子数据为离散型，quantiles参数将被忽略")
-
-        self.factor_quantiles.append(quantiles)
+        self.factor_transformers.append(quantiles or transform)
 
         # 处理数据重采样
         factor_data = data.copy()
@@ -161,11 +166,13 @@ class Moonshot:
         """
         # pylint: disable='consider-using-enumerate'
         for i in range(len(self.factor_names)):
-            if self.factor_types[i] == "continuous":
-                quantiles = self.factor_quantiles[i] or 5
+            factor_name = self.factor_names[i]
 
-                # 按月对因子进行分层
-                factor_name = self.factor_names[i]  # 使用存储的原始因子列名
+            if self.is_signals(self.data[factor_name]):
+                continue
+
+            if isinstance(self.factor_transformers[i], int):
+                quantiles = self.factor_transformers[i] or 5
 
                 # 使用qcut进行分层
                 discretized = (
@@ -193,6 +200,11 @@ class Moonshot:
 
                 # 更新因子数据
                 self.data[factor_name] = discretized_factor
+            elif isinstance(self.factor_transformers[i], Callable):
+                transform = self.factor_transformers[i]
+                self.data[factor_name] = transform(self.data[factor_name])
+            else:
+                raise ValueError(f"未知的因子转换类型: {type(self.factor_transformers[i])}")
 
     def _merge_factors_to_flag(self) -> pd.Series:
         """合并多个因子得到flag列
@@ -239,13 +251,15 @@ class Moonshot:
         """
         factor_name = self.factor_names[0]  # 使用存储的原始因子列名
         factor = self.data[factor_name]  # 从self.data获取因子数据
-        factor_type = self.factor_types[0]
+        transformer = self.factor_transformers[0]
 
-        if factor_type == "discrete":
-            flag = factor
-            return self._calculate_flag_returns(flag, long_only)
-        else:
+        if transformer is None:
+            return self._calculate_flag_returns(factor, long_only)
+        elif isinstance(transformer, int):
             return self._calculate_quantile_returns(long_only)
+        else:
+            factor = transformer(factor)
+            return self._calculate_flag_returns(factor, long_only)
 
     def _calculate_flag_returns(self, flag: pd.Series, long_only: bool) -> pd.Series:
         """基于flag计算策略收益
@@ -362,7 +376,7 @@ class Moonshot:
         """
         factor_name = self.factor_names[0]
         factor = self.data[factor_name]
-        quantiles = self.factor_quantiles[0] or 5
+        quantiles = self.factor_transformers[0] or 5
 
         # 将因子添加到数据中
         data_with_factor = self.data.copy()

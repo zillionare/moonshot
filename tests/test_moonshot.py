@@ -100,13 +100,11 @@ def mnshot(simple_test_data) -> Moonshot:
 
 class TestMoonshotClass:
     def test_check_factor_type(self, mnshot):
-        assert "discrete" == mnshot.check_factor_type(pd.Series([1, 0, -1]))
-        assert "discrete" == mnshot.check_factor_type(pd.Series([1, 1, 1]))
-        assert "discrete" == mnshot.check_factor_type(pd.Series([1.0, 0.0, -1.0]))
+        assert mnshot.is_signals(pd.Series([1, 0, -1]))
+        assert mnshot.is_signals(pd.Series([1, 1, 1]))
+        assert mnshot.is_signals(pd.Series([1.0, 0.0, -1.0]))
 
-        assert "continuous" == mnshot.check_factor_type(
-            pd.Series([1, 2, 3], dtype=np.float32)
-        )
+        assert mnshot.is_signals(pd.Series([1, 2, 3], dtype=np.float32)) is False
 
     def test_is_month_indexed(self, mnshot):
         assert mnshot.is_month_indexed(mnshot.data)
@@ -119,31 +117,32 @@ class TestMoonshotClass:
         ms = Moonshot(bars)
 
         with pytest.raises(ValueError) as e:
-            ms.append_factor(factors, "A")
+            ms.append_factor(factors, "A", quantiles=5)
 
         assert str(e.value) == "因子数据中不存在列: A"
 
         with pytest.raises(ValueError) as e:
-            ms.append_factor(factors, "factor", resample="first")
-            ms.append_factor(factors, "factor", resample="first")
+            ms.append_factor(factors, "factor", quantiles=5, resample="first")
+            ms.append_factor(factors, "factor", quantiles=5, resample="first")
 
         assert str(e.value) == "重复加入因子：factor"
 
         ms = Moonshot(bars)
-        factors["factor"] = [1, 0]
-        with patch.object(moonshot.moonshot.logger, "warning") as mock_warning:
-            ms.append_factor(factors, "factor", 5, resample="first")
-            assert mock_warning.called
+        factors["factor"] = [1, 3]
+        with pytest.raises(AssertionError) as e:
+            ms.append_factor(factors, "factor", resample="first")
+
+        assert str(e.value).startswith("因子数据要么是信号数据")
 
         ms = Moonshot(bars)
         with pytest.raises(ValueError) as e:
-            ms.append_factor(factors, "factor")
+            ms.append_factor(factors, "factor", quantiles=5)
 
         assert str(e.value) == "数据未按月份索引，请使用resample_method参数指定重采样方法"
 
-        ms.append_factor(factors, "factor", resample="first")
+        ms.append_factor(factors, "factor", resample="first", quantiles=5)
         result = ms.data["factor"].values.tolist()
-        expected = [1.0, 0.0, np.nan, np.nan]
+        expected = [1.0, 3, np.nan, np.nan]
 
         np.testing.assert_array_equal(result, expected)
 
@@ -275,7 +274,7 @@ class TestMoonshotClass:
         data = np.random.normal(size=36)
         top = np.percentile(data, 80)
         factor = pd.DataFrame(data, columns=["factor_B"], index=ms.data.index)
-        ms.append_factor(factor, "factor_B")
+        ms.append_factor(factor, "factor_B", quantiles=5)
         count_B_1 = factor.query("factor_B > @top").shape[0]
 
         data = np.random.choice([1, 0, -1], size=36)
@@ -296,6 +295,14 @@ class TestMoonshotClass:
 
         assert len(ms.data.query("factor_D == 1")) == 12
         assert len(ms.data.query("factor_D == -1")) == 12
+
+        # 测试 transformers
+        transformer = lambda x: np.where(x > 0, 1, -1)
+
+        factor = pd.DataFrame(data, columns=["factor_E"], index=ms.data.index)
+        ms.append_factor(factor, "factor_E", transform=transformer)
+        ms._discretize_continuous_factors()
+        assert set(ms.data["factor_E"].values).issubset({-1, 1})
 
     def test_merge_factors_to_flag(self, mnshot):
         """Test merge_factors_to_flag method with simple data"""
@@ -364,7 +371,7 @@ class TestMoonshotClass:
     def test_calculate_quantile_returns(self, medium_test_data):
         factor, bars = medium_test_data
         ms = Moonshot(bars)
-        ms.append_factor(factor, "factor", resample="last")
+        ms.append_factor(factor, "factor", resample="last", quantiles=5)
 
         # 01 Test with long_only=True (should only use top quantile)
         actual = ms._calculate_quantile_returns(long_only=True)
@@ -448,7 +455,7 @@ class TestMoonshotClass:
         ms = Moonshot(bars)
 
         # Add continuous factor
-        ms.append_factor(factors, "factor", resample="last")
+        ms.append_factor(factors, "factor", resample="last", quantiles=5)
 
         # Run with long_only=True
         strategy_returns, benchmark_returns = ms.run(long_only=True)
@@ -491,7 +498,7 @@ class TestMoonshotClass:
 
         ms = Moonshot(bars)
         for col in ("factor", "factor2", "factor3"):
-            ms.append_factor(factors, col, resample="last")
+            ms.append_factor(factors, col, resample="last", quantiles=5)
 
         # Run with long_only=True
         strategy_returns, _ = ms.run(long_only=True)
@@ -506,7 +513,7 @@ class TestMoonshotClass:
 
         ms = Moonshot(bars)
         for col in ("factor", "factor3", "factor4"):
-            ms.append_factor(factors, col, resample="last")
+            ms.append_factor(factors, col, resample="last", quantiles=5)
 
         # Run with long_only=False
         strategy_returns_ls, benchmark_returns_ls = ms.run(long_only=False)

@@ -1,7 +1,7 @@
 [tool]
 [tool.poetry]
 name = "moonshot"
-version = "0.3.0"
+version = "0.4.0"
 homepage = "https://github.com/zillionare/moonshot"
 description = "Alphalens lacks accurate monthly factor testing; our library delivers it.."
 authors = ["aaron yang <code@jieyu.ai>"]
